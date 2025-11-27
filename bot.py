@@ -1,199 +1,193 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+import os
+import sqlite3
+import time
+from flask import Flask, request
+import telebot
+from telebot import types
+from datetime import datetime
+import logging
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+BOT_TOKEN = "8346801600:AAGwVSdfvls42KHFtXwbcZhPzBNVEg8rU9g"  # O'zgartirmang yoki .env ga o'tkazing
+bot = telebot.TeleBot(BOT_TOKEN)
+ADMIN_ID = 2051084228
+
+# RAILWAY UCHUN MUHIM: Doimiy disk yo'li
+DB_PATH = os.getenv("DB_PATH", "/app/data/users.db")  # Railway volume
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS users 
+                 (user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, join_date TEXT)''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def add_user(user):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    now = datetime.now().strftime("%d.%m.%Y %H:%M")
+    c.execute("INSERT OR IGNORE INTO users VALUES (?, ?, ?, ?)",
+              (user.id, user.username or "—", user.first_name or "—", now))
+    conn.commit()
+    conn.close()
+
+def get_user_count():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM users")
+    count = c.fetchone()[0]
+    conn.close()
+    return count
+
+def get_all_users():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM users")
+    users = [row[0] for row in c.fetchall()]
+    conn.close()
+    return users
+
+# Qolgan kodlar (obuna, menyu, linklar) — avvalgidek qoldirdim, faqat DB_PATH ishlatilmoqda
 REQUIRED_CHANNELS = [
-    {"name": "1-kanal", "username": "@t.me/+4bVWUzADNq4yMGJi"},
-    {"name": "2-kanal", "username": "@bsb_chsb_javoblari1"},
-    {"name": "3-kanal", "username": "@t.me/+dwgq6RRtuF9jNzUydwgq6RR"},
+    {"name": "1-kanal", "username": "@bsb_chsb_javoblari1"},
+    {"name": "2-kanal", "username": "@chsb_original"},
 ]
 
 LINKS = {
-    "bsb_5": "https://www.test-uz.ru/sor_uz.php?klass=5",
-    "bsb_6": "https://www.test-uz.ru/sor_uz.php?klass=6",
-    "bsb_7": "https://www.test-uz.ru/sor_uz.php?klass=7",
-    "bsb_8": "https://www.test-uz.ru/sor_uz.php?klass=8",
-    "bsb_9": "https://www.test-uz.ru/sor_uz.php?klass=9",
-    "bsb_10": "https://www.test-uz.ru/sor_uz.php?klass=10",
+    "bsb_5": "https://www.test-uz.ru/sor_uz.php?klass=5", "bsb_6": "https://www.test-uz.ru/sor_uz.php?klass=6",
+    "bsb_7": "https://www.test-uz.ru/sor_uz.php?klass=7", "bsb_8": "https://www.test-uz.ru/sor_uz.php?klass=8",
+    "bsb_9": "https://www.test-uz.ru/sor_uz.php?klass=9", "bsb_10": "https://www.test-uz.ru/sor_uz.php?klass=10",
     "bsb_11": "https://www.test-uz.ru/sor_uz.php?klass=11",
-    "chsb_5": "https://www.test-uz.ru/soch_uz.php?klass=5",
-    "chsb_6": "https://www.test-uz.ru/soch_uz.php?klass=6",
-    "chsb_7": "https://www.test-uz.ru/soch_uz.php?klass=7",
-    "chsb_8": "https://www.test-uz.ru/soch_uz.php?klass=8",
-    "chsb_9": "https://www.test-uz.ru/soch_uz.php?klass=9",
-    "chsb_10": "https://www.test-uz.ru/soch_uz.php?klass=10",
+    "chsb_5": "https://www.test-uz.ru/soch_uz.php?klass=5", "chsb_6": "https://www.test-uz.ru/soch_uz.php?klass=6",
+    "chsb_7": "https://www.test-uz.ru/soch_uz.php?klass=7", "chsb_8": "https://www.test-uz.ru/soch_uz.php?klass=8",
+    "chsb_9": "https://www.test-uz.ru/soch_uz.php?klass=9", "chsb_10": "https://www.test-uz.ru/soch_uz.php?klass=10",
     "chsb_11": "https://www.test-uz.ru/soch_uz.php?klass=11",
 }
 
- # Bu yerga o'zingizning Telegram user IDingizni yozing
-ADMIN_ID = 2051084228
-
-async def check_subscription_status(context, user_id):
-    not_subscribed = []
-    for channel in REQUIRED_CHANNELS:
+def is_subscribed(user_id):
+    for ch in REQUIRED_CHANNELS:
         try:
-            member = await context.bot.get_chat_member(chat_id=channel["username"], user_id=user_id)
-            if member.status not in ["member", "administrator", "creator"]:
-                not_subscribed.append(channel["name"])
-        except Exception:
-            not_subscribed.append(channel["name"])
-    return not_subscribed
+            status = bot.get_chat_member(ch["username"], user_id).status
+            if status in ["left", "kicked"]: return False
+        except: return False
+    return True
 
+def subscription_buttons():
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    for ch in REQUIRED_CHANNELS:
+        markup.add(types.InlineKeyboardButton(ch["name"], url=f"https://t.me/{ch['username'][1:]}"))
+    markup.add(types.InlineKeyboardButton("Tekshirish", callback_data="check_subs"))
+    return markup
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+def main_menu_markup():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add("BSB JAVOBLARI", "CHSB JAVOBLARI", "Reklama xizmati")
+    return markup
 
-    # Foydalanuvchini users.txt faylga yozamiz (agar hali yozilmagan bo'lsa)
-    try:
-        with open("users.txt", "r") as f:
-            users = f.read().splitlines()
-    except FileNotFoundError:
-        users = []
+def sub_menu_markup(typ):
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    for i in range(5, 12, 2):
+        markup.row(f"{i}-sinf {typ}", f"{i+1}-sinf {typ}")
+    markup.add("Asosiy menyu")
+    return markup
 
-    if str(user_id) not in users:
-        users.append(str(user_id))
-        with open("users.txt", "w") as f:
-            f.write("\n".join(users))
+@bot.message_handler(commands=['start'])
+def start_handler(message):
+    add_user(message.from_user)
+    welcome = f"""Assalomu alaykum {message.from_user.first_name}
 
-    user = update.effective_user.first_name
-    welcome_text = f"""Assalomu alaykum {user} 👋🏻  
-Botimizga xush kelibsiz 🎊
+Botimizga xush kelibsiz
 
-Bu bot orqali:
- • Bsb javobi va savoli
- • Chsb javobi va savoli
- • BSB CHSB uchun slayd va esselarni topishingiz mumkin hammasi tekin 🎁  
+BSB & CHSB javoblari — hammasi tekin
 
-Botdan foydalanish uchun kanalga obuna boʻling va tekshirish tugmasini bosing ‼️"""
+Kanallarga obuna bo‘ling"""
+    bot.send_message(message.chat.id, welcome, reply_markup=subscription_buttons())
 
-    subscribe_buttons = [
-        [InlineKeyboardButton(channel['name'], url=f"https://t.me/{channel['username'][1:]}")]
-        for channel in REQUIRED_CHANNELS
-    ]
-    subscribe_buttons.append([InlineKeyboardButton("✅ Tekshirish", callback_data="check_subs")])
-
-    reply_markup = InlineKeyboardMarkup(subscribe_buttons)
-    await update.message.reply_text(welcome_text, reply_markup=reply_markup)
-
-
-async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user_id = query.from_user.id
-
-    not_subscribed = await check_subscription_status(context, user_id)
-
-    if not_subscribed:
-        msg = "❌ Quyidagi kanallarga obuna bo‘lmagansiz:\n"
-        msg += "\n".join(f"• {name}" for name in not_subscribed)
-        msg += "\n\nIltimos, quyidagi kanallarga obuna bo‘ling va keyin tekshirib ko‘ring."
-
-        subscribe_buttons = [
-            [InlineKeyboardButton(channel['name'], url=f"https://t.me/{channel['username'][1:]}")]
-            for channel in REQUIRED_CHANNELS if channel['name'] in not_subscribed
-        ]
-        subscribe_buttons.append([InlineKeyboardButton("✅ Tekshirish", callback_data="check_subs")])
-        reply_markup = InlineKeyboardMarkup(subscribe_buttons)
-
-        await query.answer(text="Siz obuna emassiz", show_alert=True)
-        await query.edit_message_text(msg, reply_markup=reply_markup)
+@bot.callback_query_handler(func=lambda call: call.data == "check_subs")
+def check_subscriptions(call):
+    if is_subscribed(call.from_user.id):
+        bot.edit_message_text("Obuna tasdiqlandi!", call.message.chat.id, call.message.message_id)
+        bot.send_message(call.message.chat.id, "Asosiy menyu:", reply_markup=main_menu_markup())
     else:
-        msg = "✅ Siz barcha kanallarga obuna bo‘lgansiz!\nEndi botdan foydalanishingiz mumkin 🎉"
-        await query.answer()
-        await query.edit_message_text(msg)
-        await send_main_menu(query, context)
+        bot.answer_callback_query(call.id, "Obuna bo‘lmagansiz!", show_alert=True)
 
+@bot.message_handler(func=lambda m: m.text in ["BSB JAVOBLARI", "CHSB JAVOBLARI"])
+def select_menu(message):
+    if not is_subscribed(message.from_user.id):
+        return bot.send_message(message.chat.id, "Obuna bo‘ling!", reply_markup=subscription_buttons())
+    typ = "BSB" if "BSB" in message.text else "CHSB"
+    bot.send_message(message.chat.id, f"{typ} sinfni tanlang:", reply_markup=sub_menu_markup(typ))
 
-async def send_main_menu(update_or_query, context):
-    buttons = [
-        [InlineKeyboardButton("BSB JAVOBLARI ☑️", callback_data="bsb")],
-        [InlineKeyboardButton("CHSB JAVOBLARI ❗️", callback_data="chsb")],
-        [InlineKeyboardButton("Reklama xizmati 📬", callback_data="reklama")]
-    ]
-    markup = InlineKeyboardMarkup(buttons)
-
-    if hasattr(update_or_query, "message") and update_or_query.message:
-        await update_or_query.message.reply_text("Asosiy menyu:", reply_markup=markup)
-    else:
-        await update_or_query.edit_message_text("Asosiy menyu:", reply_markup=markup)
-
-
-async def send_sub_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    data = query.data  # "bsb" yoki "chsb"
-
-    buttons = []
-    for grade in range(5, 12):
-        if data == "bsb":
-            text = f"{grade}-sinf bsb javoblari 📚"
-            callback_data = f"bsb_{grade}"
-        else:
-            text = f"{grade}-sinf chsb javoblari ❇️"
-            callback_data = f"chsb_{grade}"
-        buttons.append([InlineKeyboardButton(text, callback_data=callback_data)])
-
-    buttons.append([InlineKeyboardButton("🏠 Asosiy menyuga qaytish", callback_data="main_menu")])
-
-    markup = InlineKeyboardMarkup(buttons)
-    await query.edit_message_text(f"{data.upper()} menyusi:", reply_markup=markup)
-
-
-async def handle_grade_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    data = query.data
-
-    link = LINKS.get(data)
-
+@bot.message_handler(func=lambda m: "sinf" in m.text)
+def send_link(message):
+    if not is_subscribed(message.from_user.id):
+        return bot.send_message(message.chat.id, "Obuna bo‘ling!", reply_markup=subscription_buttons())
+    grade = message.text.split("-")[0].strip()
+    typ = "bsb" if "BSB" in message.text else "chsb"
+    key = f"{typ}_{grade}"
+    link = LINKS.get(key)
     if link:
-        await query.answer()
-        await query.edit_message_text(
-            f"Siz tanladingiz: {data.upper()}\nMana siz uchun havola:\n{link}"
-        )
+        bot.send_message(message.chat.id, f"{message.text}\n\nLink: {link}")
     else:
-        await query.answer()
-        await query.edit_message_text(
-            f"Siz tanladingiz: {data.upper()}\nKechirasiz, havola topilmadi."
-        )
+        bot.send_message(message.chat.id, "Link topilmadi.")
 
+@bot.message_handler(func=lambda m: m.text == "Asosiy menyu")
+def back(message): bot.send_message(message.chat.id, "Asosiy menyu:", reply_markup=main_menu_markup())
 
-async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await send_main_menu(query, context)
+@bot.message_handler(func=lambda m: m.text == "Reklama xizmati")
+def reklama(message): bot.send_message(message.chat.id, "Reklama: @BAR_xn")
 
+# ADMIN
+@bot.message_handler(commands=['admin'])
+def admin(message):
+    if message.from_user.id != ADMIN_ID: return
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add("Xabar yuborish", "Statistika", "Chiqish")
+    bot.send_message(message.chat.id, "Admin panel", reply_markup=markup)
 
-async def reklama_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("📬 Reklama uchun admin bilan bog‘laning: @BAR_xn")
+@bot.message_handler(func=lambda m: m.text == "Statistika" and m.from_user.id == ADMIN_ID)
+def stats(message): bot.reply_to(message, f"Foydalanuvchilar: {get_user_count():,} ta")
 
+@bot.message_handler(func=lambda m: m.text == "Xabar yuborish" and m.from_user.id == ADMIN_ID)
+def broadcast_start(message):
+    msg = bot.send_message(message.chat.id, "Xabarni yuboring\n/cancel — bekor qilish")
+    bot.register_next_step_handler(msg, broadcast_process)
 
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID :
-        await update.message.reply_text("Sizda bu buyruqni ishlatishga ruxsat yo'q.")
-        return
+def broadcast_process(message):
+    if message.text == "/cancel": return bot.reply_to(message, "Bekor qilindi")
+    users = get_all_users()
+    total = len(users)
+    success = failed = 0
+    status = bot.send_message(message.chat.id, f"0/{total}")
+    for i, uid in enumerate(users):
+        try:
+            bot.copy_message(uid, message.chat.id, message.message_id)
+            success += 1
+        except: failed += 1
+        if (i+1) % 10 == 0 or i == total-1:
+            bot.edit_message_text(f"{success+failed}/{total}\n{success} | {failed}", message.chat.id, status.message_id)
+            time.sleep(0.33)
+    bot.edit_message_text(f"Broadcast tugadi!\n{success} | {failed}", message.chat.id, status.message_id)
 
-    try:
-        with open("users.txt", "r") as f:
-            users = f.read().splitlines()
-    except FileNotFoundError:
-        users = []
+# Webhook
+@app.route(f"/{BOT_TOKEN}", methods=['POST'])
+def webhook():
+    update = telebot.types.Update.de_json(request.stream.read().decode("utf-8"))
+    bot.process_new_updates([update])
+    return "OK", 200
 
-    await update.message.reply_text(f"Botni ishlatgan foydalanuvchilar soni: {len(users)}")
-
-
-def main():
-    app = ApplicationBuilder().token("8346801600:AAE1OLRS8bIufNisAMfVqCxx_4JTQ22Vzt0").build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("stats", stats))  # Statistika buyruqni qo'shdik
-    app.add_handler(CallbackQueryHandler(check_subscription, pattern="check_subs"))
-    app.add_handler(CallbackQueryHandler(send_sub_menu, pattern="^(bsb|chsb)$"))
-    app.add_handler(CallbackQueryHandler(handle_grade_selection, pattern="^(bsb|chsb)_[5-9]|(bsb|chsb)_1[0-1]$"))
-    app.add_handler(CallbackQueryHandler(main_menu, pattern="main_menu"))
-    app.add_handler(CallbackQueryHandler(reklama_handler, pattern="reklama"))
-
-    print("🤖 Bot ishga tushdi!")
-    app.run_polling()
-
+@app.route("/")
+def index(): return "Bot ishlayapti!"
 
 if __name__ == "__main__":
-    main()
+    bot.remove_webhook()
+    time.sleep(1)
+    bot.set_webhook(url=f"https://{os.getenv('RAILWAY_STATIC_URL') or 'your-project.up.railway.app'}/{BOT_TOKEN}")
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
